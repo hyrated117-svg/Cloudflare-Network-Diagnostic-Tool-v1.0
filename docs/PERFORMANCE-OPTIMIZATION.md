@@ -1,153 +1,240 @@
 # Performance Optimization Guide
 
-## 🎯 Executive Summary
+This guide covers advanced performance optimization techniques for the Cloudflare Network Diagnostic Tool.
 
-This document outlines **critical performance improvements** for the Cloudflare Network Diagnostic Tool. Implementation of these optimizations can reduce diagnostic runtime from **~67ms to ~22ms (3x faster)** and prevent UI blocking on larger result sets.
+## Advanced Caching Strategies
 
----
+### Cache Invalidation
 
-## 📊 Performance Issues by Priority
+```swift
+class CacheManager {
+    private let cache = NSCache<NSString, DiagnosticResult>()
+    
+    func invalidateCache(olderThan: TimeInterval) {
+        // Remove entries older than specified time
+        cache.removeAllObjects()
+    }
+    
+    func invalidatePattern(matching pattern: String) {
+        // Selective invalidation based on pattern
+    }
+}
+```
 
-### 🔴 CRITICAL (Do First)
+### Multi-Level Caching
 
-#### 1. Sequential DNS Benchmarking → Parallel Execution
-**Impact:** -3x latency (67ms → 22ms)  
-**Effort:** Low  
-**Status:** 🔴 Critical
+```swift
+// Level 1: In-memory cache (fast, limited size)
+// Level 2: Disk cache (slower, larger)
+// Level 3: Network cache (slowest, unlimited)
 
-**Problem:**
-If DNS benchmark tests run sequentially:
-- Cloudflare: 12ms
-- Google: 18ms  
-- Quad9: 15ms
-- NextDNS: 22ms
-- **Total: ~67ms**
+struct MultiLevelCache {
+    let memory = MemoryCache(maxSize: 50_000_000)  // 50MB
+    let disk = DiskCache(maxSize: 500_000_000)     // 500MB
+    let network = NetworkCache()
+}
+```
 
-If run in parallel, total time = ~22ms (longest individual test)
+## Concurrency Optimization
 
-**Solution:** Use Swift `async/await` with concurrent tasks
+### Actor-Based Concurrency
 
----
+```swift
+actor DiagnosticEngine {
+    private var results: [String: DiagnosticResult] = [:]
+    
+    func runConcurrently(_ modules: [DiagnosticModule]) async -> [DiagnosticResult] {
+        await withTaskGroup(of: DiagnosticResult.self) { group in
+            for module in modules {
+                group.addTask {
+                    try await module.execute()
+                }
+            }
+            
+            var results: [DiagnosticResult] = []
+            for await result in group {
+                results.append(result)
+            }
+            return results
+        }
+    }
+}
+```
 
-#### 2. URLSession Timeout Configuration
-**Impact:** Prevents infinite hangs on slow networks  
-**Effort:** Low  
-**Status:** 🔴 Critical
+### Task Priority Management
 
-**Problem:**
-Default URLSession timeout is 60 seconds. On poor networks, one slow resolver blocks all others indefinitely.
+```swift
+// High-priority diagnostics
+Task(priority: .high) {
+    await runCriticalDiagnostics()
+}
 
-**Solution:** Set explicit timeouts for request and resource
+// Background diagnostics
+Task(priority: .background) {
+    await runAnalyticsSync()
+}
+```
 
----
+## Network Optimization
 
-### 🟠 HIGH (High ROI)
+### HTTP/2 Multiplexing
 
-#### 3. JSON Export on Main Thread
-**Impact:** UI freeze on large exports  
-**Effort:** Low  
-**Status:** 🟠 High
+```swift
+let config = URLSessionConfiguration.default
+config.httpVersion = .http2
+let session = URLSession(configuration: config)
+```
 
-**Problem:**
-JSON encoding/pretty-printing can block UI for 100-500ms on large datasets.
+### Connection Pooling
 
-**Solution:** Move encoding to background thread with DispatchQueue
+```swift
+class ConnectionPool {
+    private let maxConnections = 6
+    private var activeConnections = 0
+    private let queue = DispatchQueue(label: "connection-pool")
+    
+    func acquire() async {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                while self.activeConnections >= self.maxConnections {
+                    // Wait for connection
+                }
+                self.activeConnections += 1
+                continuation.resume()
+            }
+        }
+    }
+}
+```
 
----
+## Data Processing Optimization
 
-#### 4. Base64 Logging Optimization
-**Impact:** -33% I/O overhead  
-**Effort:** Medium  
-**Status:** 🟠 High
+### Lazy Evaluation
 
-**Problem:**
-- Every log write triggers Base64 encoding
-- 33% size overhead on all logs
-- Synchronous encoding blocks main thread
+```swift
+struct LazyResults {
+    lazy var processedData: [ProcessedResult] = {
+        return rawData.map { process($0) }
+    }()
+}
+```
 
-**Solution:** Batch encode on background thread, or use compression instead
+### Streaming Processing
 
----
+```swift
+func processLargeDataset(stream: AsyncStream<DataChunk>) async {
+    for await chunk in stream {
+        // Process incrementally
+        processChunk(chunk)
+    }
+}
+```
 
-### 🟡 MEDIUM (Nice to Have)
+## Memory Optimization
 
-#### 5. Health Scoring Algorithm Caching
-**Impact:** Prevents redundant calculations  
-**Effort:** Medium  
-**Status:** 🟡 Medium
+### Object Pool Pattern
 
-**Solution:** Memoize scoring results, cache between runs
+```swift
+class ResultPool {
+    private var available: [DiagnosticResult] = []
+    private let lock = NSLock()
+    
+    func acquire() -> DiagnosticResult {
+        lock.lock()
+        defer { lock.unlock() }
+        return available.popLast() ?? DiagnosticResult()
+    }
+    
+    func release(_ result: DiagnosticResult) {
+        lock.lock()
+        defer { lock.unlock() }
+        available.append(result)
+    }
+}
+```
 
----
+## Profiling and Analysis
 
-#### 6. Log Cleanup Batching
-**Impact:** Prevents long I/O operations  
-**Effort:** Low  
-**Status:** 🟡 Medium
+### Using Instruments
 
-**Problem:**
-Scanning all logs sequentially for deletion can stall app.
+1. **Time Profiler**: Identify hot paths
+   ```
+   Xcode → Product → Profile → Time Profiler
+   ```
 
-**Solution:** Use file metadata index for O(1) date-based lookups
+2. **Allocations**: Track memory usage
+   ```
+   Xcode → Product → Profile → Allocations
+   ```
 
----
+3. **System Trace**: Analyze system interactions
+   ```
+   Xcode → Product → Profile → System Trace
+   ```
 
-## 🛠️ Implementation Roadmap
+### Custom Profiling
 
-| Priority | Issue | Timeline |
-|----------|-------|----------|
-| 🔴 P0 | Parallel DNS benchmarking | Week 1 |
-| 🔴 P0 | URLSession timeout config | Week 1 |
-| 🟠 P1 | Background thread exports | Week 2 |
-| 🟠 P1 | Base64 optimization | Week 2 |
-| 🟡 P2 | Health score caching | Week 3 |
-| 🟡 P2 | Log cleanup batching | Week 3 |
+```swift
+struct PerformanceMetrics {
+    var startTime: Date
+    var endTime: Date
+    var memoryUsed: UInt64
+    var cacheHits: Int
+    var networkRequests: Int
+    
+    var duration: TimeInterval {
+        endTime.timeIntervalSince(startTime)
+    }
+}
+```
 
----
+## Benchmarking Framework
 
-## 📈 Expected Performance Gains
+```swift
+class Benchmark {
+    static func measure<T>(
+        _ label: String,
+        block: () throws -> T
+    ) rethrows -> (result: T, time: TimeInterval) {
+        let start = Date()
+        let result = try block()
+        let duration = Date().timeIntervalSince(start)
+        print("\(label): \(duration)ms")
+        return (result, duration)
+    }
+}
 
-**Before Optimization:**
-- Diagnostic runtime: ~67ms (sequential DNS)
-- UI blocking on export: ~200-500ms
-- Log I/O overhead: +33% Base64
-- Memory usage: Unbounded during export
+// Usage
+let (results, time) = try Benchmark.measure("Full Diagnostics") {
+    try await engine.runDiagnostics()
+}
+```
 
-**After Optimization:**
-- Diagnostic runtime: ~22ms (3x faster) ✅
-- UI blocking: 0ms (background thread) ✅
-- Log I/O overhead: 0% (batched/streaming) ✅
-- Memory: Controlled with streaming ✅
+## Optimization Checklist
 
----
+- [ ] Enable result caching
+- [ ] Use concurrent module execution
+- [ ] Implement lazy loading
+- [ ] Optimize network requests
+- [ ] Profile with Instruments
+- [ ] Monitor memory usage
+- [ ] Implement connection pooling
+- [ ] Use appropriate data structures
+- [ ] Stream large datasets
+- [ ] Profile on actual devices
 
-## 🧪 Testing Strategy
+## Performance Targets
 
-1. **Baseline Metrics** (Before)
-   - Measure DNS benchmark duration with Xcode Instruments
-   - Profile main thread blocking during exports
-   - Monitor memory during large result export
-   - Measure Base64 encoding overhead
+| Metric | Target | Strategy |
+|--------|--------|----------|
+| Full Diagnostic | < 10s | Concurrency, caching |
+| Memory (Idle) | < 50MB | Object pool, streaming |
+| Memory (Active) | < 150MB | Lazy loading, limits |
+| DNS Lookup | < 500ms | Caching, parallel |
+| Export Speed | > 10MB/s | Streaming, compression |
 
-2. **Implementation & Testing** (During)
-   - Implement each optimization in feature branch
-   - Re-measure with Xcode Instruments after each fix
-   - Unit test concurrent DNS lookups
-   - Integration test export formats
+## Resources
 
-3. **Validation** (After)
-   - Verify 3x speedup on diagnostic runtime
-   - Confirm no UI blocking
-   - Measure memory improvement
-   - Performance regression testing
-
----
-
-## 📚 Reference Implementations
-
-See the accompanying files:
-- `NetworkLayer-Optimized.swift` — Parallel DNS with async/await
-- `ExportLayer-Optimized.swift` — Background thread exports
-- `LoggingLayer-Optimized.py` — Batched Base64 encoding
-- `HealthScoring-Optimized.swift` — Cached scoring algorithm
-- `LogCleanup-Optimized.swift` — Efficient 30-day deletion
+- [Swift Concurrency](https://docs.swift.org/swift-book/LanguageGuide/Concurrency.html)
+- [Advanced Foundation Networking](https://developer.apple.com/videos/play/wwdc2019/712/)
+- [Optimizing App Performance](https://developer.apple.com/videos/play/wwdc2020/10185/)
