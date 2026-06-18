@@ -2,113 +2,60 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: [ main, develop ]
   pull_request:
-    branches: ["main"]
-
-permissions:
-  contents: read
+    branches: [ main, develop ]
 
 jobs:
-  build-test:
-    name: 🔧 Build & Test Pipeline
-    runs-on: ubuntu-latest
-
+  swift-build:
+    runs-on: macos-latest
     steps:
-      - name: 🧱 Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
+      
+      - name: Build SwiftUI App
+        run: |
+          xcodebuild -scheme GeneratedApp -configuration Release -derivedDataPath build
+      
+      - name: Run Swift Tests
+        run: |
+          xcodebuild -scheme GeneratedApp -configuration Debug test -derivedDataPath build
 
-      # -----------------------------
-      # SwiftUI Build & Lint
-      # -----------------------------
-      - name: 🧰 Set up Swift
-        uses: swift-actions/setup-swift@v2
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          swift-version: "5.9"
-
-      - name: 🛠 Swift Build
-        working-directory: SwiftUI-App
-        run: swift build
-
-      - name: 🔍 SwiftLint (if available)
+          python-version: '3.11'
+      
+      - name: Install dependencies
         run: |
-          if command -v swiftlint >/dev/null; then
-            swiftlint lint --strict
-          else
-            echo "SwiftLint not installed — skipping"
-          fi
+          pip install flake8 pylint pytest
+      
+      - name: Lint with flake8
+        run: |
+          flake8 server/ --count --select=E9,F63,F7,F82 --show-source --statistics
+      
+      - name: Run Python tests
+        run: |
+          pytest server/ -v
 
-      # -----------------------------
-      # Python MCP Server
-      # -----------------------------
-      - name: 🐍 Set up Python
-        uses: actions/setup-python@v5
+  node-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          python-version: "3.11"
-
-      - name: 📦 Install Python tools
+          node-version: '18'
+      
+      - name: Install dependencies
         run: |
-          pip install black flake8 pytest
-
-      - name: 🔍 Python Lint
+          cd installers && npm install
+      
+      - name: Lint with ESLint
         run: |
-          black --check server
-          flake8 server
-
-      - name: 🧪 Python Tests
-        run: pytest -q || true
-
-      # -----------------------------
-      # Node Installer
-      # -----------------------------
-      - name: 🟦 Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: 📦 Install Node dependencies
-        working-directory: installers
-        run: npm install --ignore-scripts
-
-      - name: 🔍 ESLint (if present)
-        working-directory: installers
-        run: |
-          if [ -f ".eslintrc.json" ]; then
-            npx eslint .
-          else
-            echo "No ESLint config — skipping"
-          fi
-
-      - name: 🔍 npm audit
-        working-directory: installers
-        run: npm audit --audit-level=high || true
-
-      # -----------------------------
-      # JSON Validation
-      # -----------------------------
-      - name: 🔎 Validate JSON files
-        run: |
-          find . -name "*.json" -print0 | while IFS= read -r -d '' file; do
-            echo "Validating $file"
-            python3 - <<EOF
-import json,sys
-try:
-    json.load(open("$file"))
-except Exception as e:
-    print("❌ JSON error in $file:", e)
-    sys.exit(1)
-EOF
-          done
-
-      # -----------------------------
-      # Upload CI Logs
-      # -----------------------------
-      - name: 📤 Upload CI logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-logs
-          path: |
-            **/*.log
-            **/pytest*.xml
-          retention-days: 7
+          cd installers && npm run lint

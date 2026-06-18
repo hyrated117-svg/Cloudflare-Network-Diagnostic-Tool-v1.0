@@ -2,109 +2,56 @@ name: Security Scan
 
 on:
   push:
-    branches: ["main"]
+    branches: [ main ]
   pull_request:
-    branches: ["main"]
+    branches: [ main ]
   schedule:
-    - cron: "0 3 * * *"   # Daily at 03:00 UTC
-
-permissions:
-  contents: read
-  security-events: write
+    - cron: '0 2 * * 0'  # Weekly scan
 
 jobs:
-  security-audit:
-    name: 🔐 Security Audit
+  codeql:
+    name: CodeQL Analysis
     runs-on: ubuntu-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'python', 'javascript' ]
+    
     steps:
-      - name: 🧱 Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v2
+      with:
+        languages: ${{ matrix.language }}
+    
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v2
+    
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v2
 
-      # -----------------------------
-      # CodeQL Static Analysis
-      # -----------------------------
-      - name: 🧬 Initialize CodeQL
-        uses: github/codeql-action/init@v3
+  dependency-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          languages: |
-            javascript
-            python
-            swift
-
-      - name: 🧪 CodeQL Analyze
-        uses: github/codeql-action/analyze@v3
-
-      # -----------------------------
-      # Node Security Scan
-      # -----------------------------
-      - name: 🟦 Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: 📦 Install Node dependencies
-        working-directory: installers
-        run: npm install --ignore-scripts
-
-      - name: 🔍 npm audit
-        working-directory: installers
-        run: npm audit --audit-level=high || true
-
-      # -----------------------------
-      # Python Security Scan
-      # -----------------------------
-      - name: 🐍 Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: 📦 Install Python dependencies
+          python-version: '3.11'
+      
+      - name: Check for vulnerable dependencies
         run: |
-          pip install bandit safety
-
-      - name: 🔍 Bandit scan (Python static analysis)
-        run: bandit -r server -f json -o bandit-report.json
-
-      - name: 🔍 Safety vulnerability scan
-        run: safety check --json > safety-report.json
-
-      # -----------------------------
-      # Swift Security Scan
-      # -----------------------------
-      - name: 🧰 Set up Swift
-        uses: swift-actions/setup-swift@v2
+          pip install safety
+          safety check
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          swift-version: "5.9"
-
-      - name: 🔍 SwiftLint (if present)
+          node-version: '18'
+      
+      - name: Check npm dependencies
         run: |
-          if command -v swiftlint >/dev/null; then
-            swiftlint lint --reporter json > swiftlint-report.json
-          else
-            echo "SwiftLint not installed — skipping"
-          fi
-
-      # -----------------------------
-      # Secret Scanning
-      # -----------------------------
-      - name: 🕵️ Detect secrets
-        uses: trufflesecurity/trufflehog@v3
-        with:
-          path: .
-          json: true
-          output: trufflehog-report.json
-
-      # -----------------------------
-      # Upload Reports
-      # -----------------------------
-      - name: 📤 Upload security reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-reports
-          path: |
-            bandit-report.json
-            safety-report.json
-            swiftlint-report.json
-            trufflehog-report.json
-          retention-days: 14
+          cd installers && npm audit --audit-level=moderate

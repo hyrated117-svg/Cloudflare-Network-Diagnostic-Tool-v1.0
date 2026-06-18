@@ -3,79 +3,46 @@ name: Release
 on:
   push:
     tags:
-      - "v*.*.*"
-
-permissions:
-  contents: write
+      - 'v*'
 
 jobs:
-  build-and-release:
+  create-release:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 🧱 Checkout
-        uses: actions/checkout@v4
-
-      - name: 🧰 Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: 🐍 Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: 🧰 Set up Swift (Linux via Swift toolchain)
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "5.9"
-
-      - name: 📦 Install NPM dependencies (installers)
-        working-directory: ./installers
+      - uses: actions/checkout@v3
+      
+      - name: Generate changelog
         run: |
-          npm install
-
-      - name: 🏗 Build MCP installer pack
-        run: |
-          mkdir -p release/artifacts/installers
-          tar -czf release/artifacts/installers/mcp-installer-pack.tar.gz installers server
-          ls -R release
-
-      - name: 🔐 Generate checksums
-        run: |
-          cd release/artifacts/installers
-          sha256sum mcp-installer-pack.tar.gz > SHA256SUMS
-          cd -
-
-      - name: 📝 Generate release notes
-        id: notes
-        run: |
-          TAG="${GITHUB_REF##*/}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          cat > release/release-notes.md <<EOF
-# Cloudflare Network Diagnostic Tool – $TAG
-
-## Changes
-
-- MCP server updates
-- Installer improvements
-- Performance and stability enhancements
-
-## Artifacts
-
-- \`mcp-installer-pack.tar.gz\`
-- \`SHA256SUMS\`
-EOF
-
-      - name: 📤 Create GitHub Release
-        uses: softprops/action-gh-release@v2
+          echo "# Release ${{ github.ref_name }}" > release_notes.md
+          git log --oneline $(git describe --tags --abbrev=0)..HEAD >> release_notes.md
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.notes.outputs.tag }}
-          name: Cloudflare Network Diagnostic Tool ${{ steps.notes.outputs.tag }}
-          body_path: release/release-notes.md
           files: |
-            release/artifacts/installers/mcp-installer-pack.tar.gz
-            release/artifacts/installers/SHA256SUMS
+            release_notes.md
+          body_path: release_notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-artifacts:
+    runs-on: ubuntu-latest
+    needs: create-release
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Create distribution packages
+        run: |
+          mkdir -p release/v${{ github.ref_name }}/
+          tar -czf release/v${{ github.ref_name }}/mcp-installer-pack.tar.gz installers/ server/ docs/
+      
+      - name: Generate checksums
+        run: |
+          cd release/v${{ github.ref_name }}/
+          sha256sum mcp-installer-pack.tar.gz > SHA256SUMS
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-artifacts
+          path: release/
